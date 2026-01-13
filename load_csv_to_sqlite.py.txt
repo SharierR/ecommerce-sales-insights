@@ -1,0 +1,434 @@
+#!/usr/bin/env python3
+"""
+CSV to SQLite Database Loader
+
+This module provides functionality to load CSV data into SQLite database with:
+- Automatic database and table creation
+- Data validation and type inference
+- Error handling and logging
+- Batch processing for large files
+"""
+
+import csv
+import sqlite3
+import os
+import sys
+import logging
+from pathlib import Path
+from typing import List, Dict, Any, Tuple, Optional
+from dataclasses import dataclass
+from datetime import datetime
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('csv_loader.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ValidationResult:
+    """Result of data validation"""
+    is_valid: bool
+    errors: List[str]
+    warnings: List[str]
+
+
+class CSVToSQLiteLoader:
+    """Handles loading CSV data into SQLite database"""
+    
+    BATCH_SIZE = 1000
+    SUPPORTED_TYPES = {'TEXT', 'INTEGER', 'REAL', 'BLOB', 'NUMERIC'}
+    
+    def __init__(self, db_path: str):
+        """
+        Initialize the loader with database path
+        
+        Args:
+            db_path: Path to SQLite database file
+        """
+        self.db_path = db_path
+        self.connection = None
+        self.cursor = None
+    
+    def connect(self) -> bool:
+        """
+        Establish database connection
+        
+        Returns:
+            bool: True if connection successful, False otherwise
+        """
+        try:
+            self.connection = sqlite3.connect(self.db_path)
+            self.cursor = self.connection.cursor()
+            logger.info(f"Connected to database: {self.db_path}")
+            return True
+        except sqlite3.Error as e:
+            logger.error(f"Database connection failed: {e}")
+            return False
+    
+    def disconnect(self) -> None:
+        """Close database connection"""
+        if self.connection:
+            self.connection.close()
+            logger.info("Database connection closed")
+    
+    def infer_column_type(self, value: str) -> str:
+        """
+        Infer SQL data type from string value
+        
+        Args:
+            value: String value to analyze
+            
+        Returns:
+            str: Inferred SQL data type
+        """
+        if not value or value.lower() in ('null', 'none', ''):
+            return 'TEXT'
+        
+        # Try integer
+        try:
+            int(value)
+            return 'INTEGER'
+        except ValueError:
+            pass
+        
+        # Try float
+        try:
+            float(value)
+            return 'REAL'
+        except ValueError:
+            pass
+        
+        # Default to text
+        return 'TEXT'
+    
+    def infer_column_types(self, rows: List[Dict[str, str]]) -> Dict[str, str]:
+        """
+        Infer column types from sample rows
+        
+        Args:
+            rows: List of row dictionaries
+            
+        Returns:
+            dict: Column name to type mapping
+        """
+        if not rows:
+            return {}
+        
+        column_types = {}
+        first_row = rows[0]
+        
+        for column in first_row.keys():
+            types_found = set()
+            
+            # Sample up to 100 rows for type inference
+            for row in rows[:min(100, len(rows))]:
+                value = row.get(column, '')
+                types_found.add(self.infer_column_type(value))
+            
+            # If mixed types found, use TEXT; otherwise use most common type
+            if len(types_found) > 1:
+                column_types[column] = 'TEXT'
+            else:
+                column_types[column] = types_found.pop() if types_found else 'TEXT'
+        
+        return column_types
+    
+    def validate_csv_file(self, csv_path: str) -> ValidationResult:
+        """
+        Validate CSV file before loading
+        
+        Args:
+            csv_path: Path to CSV file
+            
+        Returns:
+            ValidationResult: Validation results with errors and warnings
+        """
+        errors = []
+        warnings = []
+        
+        # Check file exists
+        if not os.path.exists(csv_path):
+            errors.append(f"File not found: {csv_path}")
+            return ValidationResult(is_valid=False, errors=errors, warnings=warnings)
+        
+        # Check file is readable
+        if not os.access(csv_path, os.R_OK):
+            errors.append(f"File is not readable: {csv_path}")
+            return ValidationResult(is_valid=False, errors=errors, warnings=warnings)
+        
+        try:
+            with open(csv_path, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                
+                if not reader.fieldnames:
+                    errors.append("CSV file has no headers")
+                    return ValidationResult(is_valid=False, errors=errors, warnings=warnings)
+                
+                # Check for duplicate column names
+                if len(reader.fieldnames) != len(set(reader.fieldnames)):
+                    errors.append("Duplicate column names found in CSV")
+                
+                # Validate column names
+                for field in reader.fieldnames:
+                    if not field or field.strip() == '':
+                        errors.append("Found empty column name")
+                    elif not field.replace('_', '').replace(' ', '').isalnum():
+                        warnings.append(f"Column name contains special characters: {field}")
+                
+                # Check for empty file
+                row_count = 0
+                for row in reader:
+                    row_count += 1
+                    
+                    # Check for empty rows
+                    if not any(row.values()):
+                        warnings.append(f"Found empty row at line {row_count}")
+                
+                if row_count == 0:
+                    errors.append("CSV file has no data rows")
+        
+        except UnicodeDecodeError:
+            errors.append("CSV file encoding is not UTF-8")
+        except Exception as e:
+            errors.append(f"Error validating CSV: {str(e)}")
+        
+        is_valid = len(errors) == 0
+        return ValidationResult(is_valid=is_valid, errors=errors, warnings=warnings)
+    
+    def create_table(self, table_name: str, columns: Dict[str, str]) -> bool:
+        """
+        Create table in database
+        
+        Args:
+            table_name: Name of table to create
+            columns: Dictionary of column names and types
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        if not columns:
+            logger.error("No columns specified for table creation")
+            return False
+        
+        try:
+            # Sanitize table name
+            table_name = self._sanitize_identifier(table_name)
+            
+            # Build CREATE TABLE statement
+            col_defs = []
+            for col_name, col_type in columns.items():
+                sanitized_name = self._sanitize_identifier(col_name)
+                col_defs.append(f"{sanitized_name} {col_type}")
+            
+            create_sql = f"CREATE TABLE IF NOT EXISTS {table_name} ({', '.join(col_defs)})"
+            
+            self.cursor.execute(create_sql)
+            self.connection.commit()
+            logger.info(f"Table '{table_name}' created successfully")
+            return True
+        
+        except sqlite3.Error as e:
+            logger.error(f"Error creating table: {e}")
+            return False
+    
+    def _sanitize_identifier(self, identifier: str) -> str:
+        """
+        Sanitize SQL identifier (table/column name)
+        
+        Args:
+            identifier: Raw identifier string
+            
+        Returns:
+            str: Sanitized identifier
+        """
+        # Replace spaces with underscores
+        identifier = identifier.replace(' ', '_')
+        # Remove special characters
+        identifier = ''.join(c if c.isalnum() or c == '_' else '' for c in identifier)
+        # Ensure it doesn't start with a number
+        if identifier and identifier[0].isdigit():
+            identifier = f"_{identifier}"
+        
+        return identifier or "column"
+    
+    def load_csv(self, csv_path: str, table_name: str, validate: bool = True) -> Tuple[bool, str]:
+        """
+        Load CSV data into SQLite table
+        
+        Args:
+            csv_path: Path to CSV file
+            table_name: Name of table to create/populate
+            validate: Whether to validate CSV before loading
+            
+        Returns:
+            tuple: (success: bool, message: str)
+        """
+        # Validate CSV if requested
+        if validate:
+            validation = self.validate_csv_file(csv_path)
+            if not validation.is_valid:
+                error_msg = "CSV validation failed:\n" + "\n".join(validation.errors)
+                logger.error(error_msg)
+                return False, error_msg
+            
+            for warning in validation.warnings:
+                logger.warning(warning)
+        
+        try:
+            with open(csv_path, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                
+                # Read first batch to infer types
+                first_batch = []
+                for i, row in enumerate(reader):
+                    first_batch.append(row)
+                    if i >= self.BATCH_SIZE - 1:
+                        break
+                
+                if not first_batch:
+                    return False, "CSV file has no data rows"
+                
+                # Infer column types
+                column_types = self.infer_column_types(first_batch)
+                
+                # Create table
+                if not self.create_table(table_name, column_types):
+                    return False, "Failed to create table"
+                
+                # Insert first batch
+                inserted_count = self._insert_batch(first_batch, table_name, column_types)
+                total_inserted = inserted_count
+                
+                # Process remaining rows in batches
+                remaining_batch = []
+                for row in reader:
+                    remaining_batch.append(row)
+                    if len(remaining_batch) >= self.BATCH_SIZE:
+                        inserted = self._insert_batch(remaining_batch, table_name, column_types)
+                        total_inserted += inserted
+                        remaining_batch = []
+                
+                # Insert final batch
+                if remaining_batch:
+                    inserted = self._insert_batch(remaining_batch, table_name, column_types)
+                    total_inserted += inserted
+                
+                self.connection.commit()
+                success_msg = f"Successfully loaded {total_inserted} rows into table '{table_name}'"
+                logger.info(success_msg)
+                return True, success_msg
+        
+        except Exception as e:
+            error_msg = f"Error loading CSV: {str(e)}"
+            logger.error(error_msg)
+            if self.connection:
+                self.connection.rollback()
+            return False, error_msg
+    
+    def _insert_batch(self, rows: List[Dict[str, str]], table_name: str, 
+                     column_types: Dict[str, str]) -> int:
+        """
+        Insert a batch of rows into the table
+        
+        Args:
+            rows: List of row dictionaries
+            table_name: Target table name
+            column_types: Column type mapping
+            
+        Returns:
+            int: Number of rows inserted
+        """
+        if not rows:
+            return 0
+        
+        try:
+            sanitized_table = self._sanitize_identifier(table_name)
+            sanitized_columns = [self._sanitize_identifier(col) for col in rows[0].keys()]
+            
+            insert_sql = f"""
+                INSERT INTO {sanitized_table} ({', '.join(sanitized_columns)})
+                VALUES ({', '.join(['?' for _ in sanitized_columns])})
+            """
+            
+            for row in rows:
+                values = [row.get(col) for col in rows[0].keys()]
+                self.cursor.execute(insert_sql, values)
+            
+            return len(rows)
+        
+        except sqlite3.Error as e:
+            logger.error(f"Error inserting batch: {e}")
+            return 0
+    
+    def get_table_info(self, table_name: str) -> Dict[str, Any]:
+        """
+        Get information about a table
+        
+        Args:
+            table_name: Name of table
+            
+        Returns:
+            dict: Table information
+        """
+        try:
+            sanitized_table = self._sanitize_identifier(table_name)
+            
+            # Get row count
+            self.cursor.execute(f"SELECT COUNT(*) FROM {sanitized_table}")
+            row_count = self.cursor.fetchone()[0]
+            
+            # Get column info
+            self.cursor.execute(f"PRAGMA table_info({sanitized_table})")
+            columns = self.cursor.fetchall()
+            
+            return {
+                'table_name': table_name,
+                'row_count': row_count,
+                'columns': columns
+            }
+        
+        except Exception as e:
+            logger.error(f"Error getting table info: {e}")
+            return {}
+
+
+def main():
+    """Main function for CLI usage"""
+    if len(sys.argv) < 3:
+        print("Usage: python load_csv_to_sqlite.py <csv_file> <database> [table_name]")
+        print("Example: python load_csv_to_sqlite.py data.csv mydb.db sales")
+        sys.exit(1)
+    
+    csv_file = sys.argv[1]
+    db_file = sys.argv[2]
+    table_name = sys.argv[3] if len(sys.argv) > 3 else Path(csv_file).stem
+    
+    loader = CSVToSQLiteLoader(db_file)
+    
+    if not loader.connect():
+        sys.exit(1)
+    
+    try:
+        success, message = loader.load_csv(csv_file, table_name)
+        print(message)
+        
+        if success:
+            info = loader.get_table_info(table_name)
+            if info:
+                print(f"\nTable Info:")
+                print(f"  Rows: {info['row_count']}")
+                print(f"  Columns: {len(info['columns'])}")
+    
+    finally:
+        loader.disconnect()
+
+
+if __name__ == "__main__":
+    main()

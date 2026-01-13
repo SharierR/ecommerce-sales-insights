@@ -1,0 +1,31 @@
+date,product,quantity,price,total_sales,region
+2026-01-01,Laptop,2,1200.00,2400.00,North America
+2026-01-01,Mouse,15,25.50,382.50,Europe
+2026-01-01,Keyboard,8,75.00,600.00,Asia Pacific
+2026-01-02,Monitor,5,350.00,1750.00,North America
+2026-01-02,USB Cable,50,5.99,299.50,Europe
+2026-01-02,Headphones,12,99.99,1199.88,Asia Pacific
+2026-01-03,Laptop,3,1200.00,3600.00,Europe
+2026-01-03,Mouse,22,25.50,561.00,North America
+2026-01-03,Keyboard,10,75.00,750.00,Asia Pacific
+2026-01-04,Monitor,4,350.00,1400.00,Asia Pacific
+2026-01-04,Headphones,8,99.99,799.92,North America
+2026-01-04,USB Cable,35,5.99,209.65,Europe
+2026-01-05,Laptop,1,1200.00,1200.00,Asia Pacific
+2026-01-05,Monitor,6,350.00,2100.00,North America
+2026-01-05,Mouse,18,25.50,459.00,Europe
+2026-01-06,Keyboard,14,75.00,1050.00,North America
+2026-01-06,Headphones,10,99.99,999.90,Asia Pacific
+2026-01-06,USB Cable,45,5.99,269.55,Europe
+2026-01-07,Laptop,4,1200.00,4800.00,North America
+2026-01-07,Monitor,3,350.00,1050.00,Europe
+2026-01-07,Mouse,25,25.50,637.50,Asia Pacific
+2026-01-08,Keyboard,9,75.00,675.00,Europe
+2026-01-08,Headphones,15,99.99,1499.85,North America
+2026-01-08,USB Cable,40,5.99,239.60,Asia Pacific
+2026-01-09,Laptop,2,1200.00,2400.00,Europe
+2026-01-09,Monitor,7,350.00,2450.00,Asia Pacific
+2026-01-09,Mouse,20,25.50,510.00,North America
+2026-01-10,Keyboard,12,75.00,900.00,Asia Pacific
+2026-01-10,Headphones,11,99.99,1099.89,Europe
+2026-01-10,USB Cable,55,5.99,329.45,North America

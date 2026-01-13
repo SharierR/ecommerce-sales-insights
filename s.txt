@@ -1,0 +1,16 @@
+Your goal should be:
+
+“This person can build real web products and work with data.”
+
+we’ll design mini full-stack, data-powered projects
+
+Lane A: E-commerce / Marketing (best ROI for you)
+
+Goal: Show you can build tools businesses actually use.
+
+Lane B: Government / Public Data
+
+Goal: Show clean UI + data transparency + logic.
+
+⭐ Project 1 (TOP PICK):
+E-commerce Sales Insights Web App
